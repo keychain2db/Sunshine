@@ -82,12 +82,26 @@ jobs:
       - name: Apply Duo patch
         shell: bash
         run: |
+          PATCH_FILE=".github/patches/duostream-duo.patch"
+
+          if [ ! -f "$PATCH_FILE" ]; then
+            echo "Patch file not found: $PATCH_FILE"
+            echo "Repository files:"
+            ls -la
+            echo ".github contents:"
+            ls -la .github || true
+            echo ".github/patches contents:"
+            ls -la .github/patches || true
+            exit 1
+          fi
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if ! git am -3 .github/patches/duostream-duo.patch; then
+
+          if ! git am -3 "$PATCH_FILE"; then
             echo "Patch failed. Conflicts:"
             git status --short
-            git am --abort
+            git am --abort || true
             exit 1
           fi
 
