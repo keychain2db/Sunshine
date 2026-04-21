@@ -345,8 +345,8 @@ def main() -> None:
         ),
     )
 
-    def insert_after_any(text: str, anchors: list[str], addition: str, label: str) -> str:
-        if addition in text:
+def insert_after_any(text: str, anchors: list[str], addition: str, label: str) -> str:
+    if addition in text:
         return text
     for anchor in anchors:
         if anchor in text:
