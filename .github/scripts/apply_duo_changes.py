@@ -345,23 +345,37 @@ def main() -> None:
         ),
     )
 
-    def transform_process(text: str) -> str:
-        text = insert_after(
-            text,
-            '  #include "platform/windows/misc.h"\n',
-            '\n'
-            '  // We have to include boost/process.hpp before display.h due to WinSock.h,\n'
-            '  // but that prevents the definition of NTSTATUS so we must define it ourself.\n'
-            '  typedef long NTSTATUS;\n\n'
-            '  // RdpIddCaptureBuffer & RdpIddCaptureMode structures\n'
-            '  #include "platform/windows/display.h"\n',
-            "process.cpp include display.h",
-        )
+    def insert_after_any(text: str, anchors: list[str], addition: str, label: str) -> str:
+    if addition in text:
+        return text
+    for anchor in anchors:
+        if anchor in text:
+            return text.replace(anchor, anchor + addition, 1)
+    fail(f"Could not find anchor for: {label}")
 
-        text = insert_after(
-            text,
-            "  int proc_t::execute(int app_id, std::shared_ptr<rtsp_stream::launch_session_t> launch_session) {\n",
-            """    // Puzzle together the current session's shared buffer name
+def transform_process(text: str) -> str:
+    include_addition = (
+        '\n'
+        '  // We have to include boost/process.hpp before display.h due to WinSock.h,\n'
+        '  // but that prevents the definition of NTSTATUS so we must define it ourself.\n'
+        '  typedef long NTSTATUS;\n\n'
+        '  // RdpIddCaptureBuffer & RdpIddCaptureMode structures\n'
+        '  #include "platform/windows/display.h"\n'
+    )
+
+    text = insert_after_any(
+        text,
+        [
+            '  #include "platform/windows/misc.h"\n',
+            '  #include "platform/windows/misc.h"\r\n',
+            '  #include "platform/windows/misc.h"\n\n',
+            '  #include "platform/windows/misc.h"\r\n\r\n',
+        ],
+        include_addition,
+        "process.cpp include display.h",
+    )
+
+    execute_addition = """    // Puzzle together the current session's shared buffer name
     DWORD sessionId = 0;
     ProcessIdToSessionId(GetCurrentProcessId(), &sessionId);
     std::string sharedBufferName = "Global\\\\RdpIddCaptureBuffer" + std::to_string(sessionId);
@@ -399,34 +413,19 @@ def main() -> None:
       CloseHandle(sharedBufferHandle);
     }
 
-""",
-            "process.cpp shared buffer mode change",
-        )
-        return text
+"""
 
-    edit_file("src/process.cpp", transform_process)
-
-    edit_file(
-        "src/stream.cpp",
-        lambda text: replace_once(
-            text,
-            """      auto task = []() {
-        BOOST_LOG(fatal) << "Hang detected! Session failed to terminate in 10 seconds."sv;
-        logging::log_flush();
-        lifetime::debug_trap();
-      };
-      auto force_kill = task_pool.pushDelayed(task, 10s).task_id;
-""",
-            """      auto task = []() {
-        BOOST_LOG(fatal) << "Hang detected! Session failed to terminate in 30 seconds."sv;
-        logging::log_flush();
-        lifetime::debug_trap();
-      };
-      auto force_kill = task_pool.pushDelayed(task, 30s).task_id;
-""",
-            "stream.cpp extend hang timeout",
-        ),
+    text = insert_after_any(
+        text,
+        [
+            "  int proc_t::execute(int app_id, std::shared_ptr<rtsp_stream::launch_session_t> launch_session) {\n",
+            "  int proc_t::execute(int app_id, std::shared_ptr<rtsp_stream::launch_session_t> launch_session) {\r\n",
+        ],
+        execute_addition,
+        "process.cpp shared buffer mode change",
     )
+
+    return text
 
     def transform_video(text: str) -> str:
         text = remove_once(
