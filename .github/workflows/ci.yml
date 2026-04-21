@@ -52,11 +52,13 @@ jobs:
     name: Windows
     uses: ./.github/workflows/ci-windows.yml
     with:
-      publish_release: ${{ needs.release-setup.outputs.publish_release || 'false' }}
-      release_commit: ${{ needs.release-setup.outputs.release_commit || github.sha }}
-      release_version: ${{ needs.release-setup.outputs.release_version || github.ref_name }}
+      publish_release: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'true' || 'false' }}
+      release_commit: ${{ github.sha }}
+      release_version: ${{ github.ref_name }}
     secrets:
-      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
 
   release:
     name: Release
@@ -67,6 +69,8 @@ jobs:
     needs:
       - release-setup
       - build-windows
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - name: Download build artifacts
