@@ -123,7 +123,6 @@ def transform_process(text: str) -> str:
         '#include "platform/windows/display.h"\n'
     )
 
-    # Insert after the last #include in the file, regardless of exact upstream include layout.
     if '#include "platform/windows/display.h"' not in text:
         text = insert_after_last_include(
             text,
@@ -362,85 +361,6 @@ def transform_main(text: str) -> str:
 """,
         "main.cpp fail when no encoder",
     )
-    return text
-
-
-def transform_process(text: str) -> str:
-    include_addition = (
-        '\n'
-        '  // We have to include boost/process.hpp before display.h due to WinSock.h,\n'
-        '  // but that prevents the definition of NTSTATUS so we must define it ourself.\n'
-        '  typedef long NTSTATUS;\n\n'
-        '  // RdpIddCaptureBuffer & RdpIddCaptureMode structures\n'
-        '  #include "platform/windows/display.h"\n'
-    )
-
-    text = insert_after_any(
-        text,
-        [
-            '  #include "platform/windows/misc.h"\n',
-            '  #include "platform/windows/misc.h"\r\n',
-            '#include "platform/windows/misc.h"\n',
-            '#include "platform/windows/misc.h"\r\n',
-            '  #include "platform/windows/misc.h"\n\n',
-            '  #include "platform/windows/misc.h"\r\n\r\n',
-        ],
-        include_addition,
-        "process.cpp include display.h",
-    )
-
-    execute_addition = """    // Puzzle together the current session's shared buffer name
-    DWORD sessionId = 0;
-    ProcessIdToSessionId(GetCurrentProcessId(), &sessionId);
-    std::string sharedBufferName = "Global\\\\RdpIddCaptureBuffer" + std::to_string(sessionId);
-
-    // Open the shared buffer
-    HANDLE sharedBufferHandle = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, sharedBufferName.c_str());
-
-    // We managed to open the shared buffer handle
-    if (sharedBufferHandle != NULL)
-    {
-      // Map the shared buffer
-      platf::dxgi::PRdpIddCaptureBuffer sharedBuffer = (platf::dxgi::PRdpIddCaptureBuffer)MapViewOfFile(sharedBufferHandle, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(platf::dxgi::RdpIddCaptureBuffer));
-
-      // We managed to map the shared buffer
-      if (sharedBuffer != NULL)
-      {
-        // We need to adjust the mode
-        if (sharedBuffer->Mode.Width != launch_session->width || sharedBuffer->Mode.Height != launch_session->height || sharedBuffer->Mode.RefreshRate != launch_session->fps || (sharedBuffer->Mode.IsHDRSupported && sharedBuffer->Mode.HDR != launch_session->enable_hdr))
-        {
-          // Copy over the parameters
-          sharedBuffer->Mode.Width = launch_session->width;
-          sharedBuffer->Mode.Height = launch_session->height;
-          sharedBuffer->Mode.RefreshRate = launch_session->fps;
-          sharedBuffer->Mode.HDR = sharedBuffer->Mode.IsHDRSupported && launch_session->enable_hdr;
-
-          // Request a mode change
-          sharedBuffer->ModeChangePending = TRUE;
-        }
-
-        // Unmap the shared buffer
-        UnmapViewOfFile(sharedBuffer);
-      }
-
-      // Close the shared buffer handle
-      CloseHandle(sharedBufferHandle);
-    }
-
-"""
-
-    text = insert_after_any(
-        text,
-        [
-            "  int proc_t::execute(int app_id, std::shared_ptr<rtsp_stream::launch_session_t> launch_session) {\n",
-            "  int proc_t::execute(int app_id, std::shared_ptr<rtsp_stream::launch_session_t> launch_session) {\r\n",
-            "int proc_t::execute(int app_id, std::shared_ptr<rtsp_stream::launch_session_t> launch_session) {\n",
-            "int proc_t::execute(int app_id, std::shared_ptr<rtsp_stream::launch_session_t> launch_session) {\r\n",
-        ],
-        execute_addition,
-        "process.cpp shared buffer mode change",
-    )
-
     return text
 
 
