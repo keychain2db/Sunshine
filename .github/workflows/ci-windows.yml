@@ -66,13 +66,21 @@ jobs:
             toolchain: clang-aarch64
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@v5
         with:
           submodules: recursive
           fetch-depth: 0
 
+      - name: Setup Dependencies Windows
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: true
+          install: >-
+            wget
+
       - name: Apply Duo patch
-        shell: msys2 {0}
+        shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -82,15 +90,6 @@ jobs:
             git am --abort
             exit 1
           fi
-
-      - name: Setup Dependencies Windows
-        # if a dependency needs to be pinned, see https://github.com/LizardByte/build-deps/pull/186
-        uses: msys2/setup-msys2@e9898307ac31d1a803454791be09ab9973336e1c  # v2.31.1
-        with:
-          msystem: ${{ matrix.msystem }}
-          update: true
-          install: >-
-            wget
 
       - name: Update Windows dependencies
         env:
@@ -312,13 +311,19 @@ jobs:
 
       - name: Debug nsis
         if: always()
-        shell: msys2 {0}
-        run: cat ./build/cpack_artifacts/_CPack_Packages/win64/NSIS/NSISOutput.log || true
+        shell: pwsh
+        run: |
+          if (Test-Path "./build/cpack_artifacts/_CPack_Packages/win64/NSIS/NSISOutput.log") {
+            Get-Content "./build/cpack_artifacts/_CPack_Packages/win64/NSIS/NSISOutput.log"
+          }
 
       - name: Debug wix
         if: always()
-        shell: msys2 {0}
-        run: cat ./build/cpack_artifacts/_CPack_Packages/win64/WIX/wix.log || true
+        shell: pwsh
+        run: |
+          if (Test-Path "./build/cpack_artifacts/_CPack_Packages/win64/WIX/wix.log") {
+            Get-Content "./build/cpack_artifacts/_CPack_Packages/win64/WIX/wix.log"
+          }
 
       - name: Run tests
         if: false
