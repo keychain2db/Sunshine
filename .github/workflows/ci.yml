@@ -27,6 +27,7 @@ jobs:
 
   release-setup:
     name: Release Setup
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     outputs:
       publish_release: ${{ steps.release-setup.outputs.publish_release }}
       release_body: ${{ steps.release-setup.outputs.release_body }}
@@ -49,73 +50,20 @@ jobs:
 
   build-windows:
     name: Windows
-    needs: release-setup
     uses: ./.github/workflows/ci-windows.yml
     with:
-      release_commit: ${{ needs.release-setup.outputs.release_commit }}
-      release_version: ${{ needs.release-setup.outputs.release_version }}
+      publish_release: ${{ needs.release-setup.outputs.publish_release || 'false' }}
+      release_commit: ${{ needs.release-setup.outputs.release_commit || github.sha }}
+      release_version: ${{ needs.release-setup.outputs.release_version || github.ref_name }}
     secrets:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
-  coverage:
-    name: Coverage-${{ matrix.name }}
-    if: >-
-      always() &&
-      !cancelled() &&
-      startsWith(github.repository, 'LizardByte/')
-    needs:
-      - build-windows
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Linux-AppImage
-            coverage: false
-          - name: Homebrew-macos-14
-            coverage: false
-          - name: Homebrew-macos-15
-            coverage: false
-          - name: Homebrew-ubuntu-latest
-            coverage: false
-          - name: Windows-AMD64
-            coverage: true
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Download coverage artifact
-        uses: actions/download-artifact@v5
-        with:
-          name: coverage-${{ matrix.name }}
-          path: _coverage
-
-      - name: Upload test results
-        uses: codecov/test-results-action@v1
-        with:
-          disable_search: true
-          fail_ci_if_error: true
-          files: ./_coverage/tests/test_results.xml
-          flags: ${{ matrix.name }}
-          token: ${{ secrets.CODECOV_TOKEN }}
-          verbose: true
-
-      - name: Upload coverage
-        uses: codecov/codecov-action@v5
-        if: matrix.coverage != false
-        with:
-          disable_search: true
-          fail_ci_if_error: true
-          files: ./_coverage/coverage.xml
-          flags: ${{ matrix.name }}
-          token: ${{ secrets.CODECOV_TOKEN }}
-          verbose: true
-
   release:
     name: Release
-    if:
-      needs.release-setup.outputs.publish_release == 'true' &&
-      startsWith(github.repository, 'LizardByte/')
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/master' &&
+      needs.release-setup.outputs.publish_release == 'true'
     needs:
       - release-setup
       - build-windows
@@ -142,30 +90,3 @@ jobs:
           tag: ${{ needs.release-setup.outputs.release_tag }}
           token: ${{ secrets.GH_BOT_TOKEN }}
           virustotal_api_key: ${{ secrets.VIRUSTOTAL_API_KEY }}
-
-  release-homebrew-beta:
-    name: Release Homebrew Beta
-    if:
-      needs.release-setup.outputs.publish_release == 'true' &&
-      startsWith(github.repository, 'LizardByte/')
-    needs:
-      - release-setup
-      - build-homebrew
-      - release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download homebrew artifacts
-        uses: actions/download-artifact@v5
-        with:
-          name: beta-Homebrew
-          path: homebrew
-
-      - name: Upload Homebrew Beta Formula
-        uses: LizardByte/actions/actions/release_homebrew@v2025.814.40518
-        with:
-          formula_file: ${{ github.workspace }}/homebrew/sunshine-beta.rb
-          git_email: ${{ secrets.GH_BOT_EMAIL }}
-          git_username: ${{ secrets.GH_BOT_NAME }}
-          publish: true
-          token: ${{ secrets.GH_BOT_TOKEN }}
-          validate: false
