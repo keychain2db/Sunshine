@@ -192,19 +192,19 @@ def transform_process(text: str) -> str:
 
 
 def normalize_display_base_cpp(text: str) -> str:
-    # Normalize Boost.Process usage and include ordering so WinSock stays happy.
+    # Keep only the v1 Boost.Process include.
     text = text.replace("#include <boost/process.hpp>\r\n", "")
     text = text.replace("#include <boost/process.hpp>\n", "")
     text = text.replace("#include <boost/process/v1.hpp>\r\n", "")
     text = text.replace("#include <boost/process/v1.hpp>\n", "")
 
+    # We'll reinsert these in the correct order.
     text = text.replace('#include "display.h"\r\n', "")
     text = text.replace('#include "display.h"\n', "")
-
     text = text.replace('#include "utf_utils.h"\r\n', "")
     text = text.replace('#include "utf_utils.h"\n', "")
 
-    # Remove direct Windows includes if the replacement brought them in.
+    # Remove any direct Windows includes that can interfere with Boost.Process / WinSock ordering.
     text = text.replace("#include <Windows.h>\r\n", "")
     text = text.replace("#include <Windows.h>\n", "")
     text = text.replace("#include <windows.h>\r\n", "")
@@ -224,10 +224,11 @@ def normalize_display_base_cpp(text: str) -> str:
         "display_base.cpp include normalization",
     )
 
-    # Remove duplicate MinHook include if it already existed elsewhere.
+    # De-dupe MinHook if needed.
     text = text.replace('#include <MinHook.h>\n#include <MinHook.h>\n', '#include <MinHook.h>\n')
     text = text.replace('#include <MinHook.h>\r\n#include <MinHook.h>\r\n', '#include <MinHook.h>\r\n')
 
+    # Reinsert display.h after NTSTATUS so WinSock ordering stays safe.
     text = replace_once(
         text,
         'typedef long NTSTATUS;\n',
@@ -235,13 +236,16 @@ def normalize_display_base_cpp(text: str) -> str:
         "display_base.cpp reinsert display.h after NTSTATUS",
     )
 
-    text = text.replace("namespace bp = boost::process::v1;", "namespace bp = boost::process;")
-    text = text.replace("namespace bp = boost::process::v1", "namespace bp = boost::process")
+    # Force the alias back to v1.
+    text = re.sub(
+        r'namespace\s+bp\s*=\s*boost::process(?:::v1)?\s*;',
+        'namespace bp = boost::process::v1;',
+        text,
+    )
 
+    # Fix utf_utils calls.
     text = text.replace("to_utf8(", "utf_utils::to_utf8(")
     text = text.replace("from_utf8(", "utf_utils::from_utf8(")
-
-    # Avoid double-qualification if already fixed.
     text = text.replace("utf_utils::utf_utils::to_utf8(", "utf_utils::to_utf8(")
     text = text.replace("utf_utils::utf_utils::from_utf8(", "utf_utils::from_utf8(")
 
