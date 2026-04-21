@@ -185,7 +185,7 @@ jobs:
           Remove-Item -Path doxygen-setup.exe
 
       - name: Setup dotnet  # needed for wix
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3ced7  # v5.2.0
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '10.x'
 
