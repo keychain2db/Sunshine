@@ -10,7 +10,7 @@ def fail(message: str) -> None:
 def read(path: str) -> str:
     p = Path(path)
     if not p.exists():
-      fail(f"Missing file: {path}")
+        fail(f"Missing file: {path}")
     return p.read_text(encoding="utf-8")
 
 
@@ -46,16 +46,33 @@ def insert_before(text: str, anchor: str, addition: str, label: str) -> str:
     return text.replace(anchor, addition + anchor, 1)
 
 
+def insert_after_any(text: str, anchors: list[str], addition: str, label: str) -> str:
+    if addition in text:
+        return text
+    for anchor in anchors:
+        if anchor in text:
+            return text.replace(anchor, anchor + addition, 1)
+    fail(f"Could not find anchor for: {label}")
+
+
+def insert_before_any(text: str, anchors: list[str], addition: str, label: str) -> str:
+    if addition in text:
+        return text
+    for anchor in anchors:
+        if anchor in text:
+            return text.replace(anchor, addition + anchor, 1)
+    fail(f"Could not find anchor for: {label}")
+
+
 def remove_between(text: str, start: str, end: str, label: str) -> str:
     start_idx = text.find(start)
-    end_idx = text.find(end)
-
     if start_idx == -1:
-        if end_idx != -1:
+        if end in text:
             return text
         fail(f"Could not find start marker for: {label}")
 
-    if end_idx == -1 or end_idx < start_idx:
+    end_idx = text.find(end, start_idx + len(start))
+    if end_idx == -1:
         fail(f"Could not find end marker for: {label}")
 
     return text[:start_idx] + text[end_idx:]
@@ -81,6 +98,455 @@ def edit_file(path: str, transform) -> None:
     updated = transform(original)
     write(path, updated)
     print(f"Applied Duo inline edits to {path}")
+
+
+def normalize_display_base_cpp(text: str) -> str:
+    # Normalize Boost.Process usage and include ordering so WinSock stays happy.
+    text = text.replace("#include <boost/process.hpp>\r\n", "")
+    text = text.replace("#include <boost/process.hpp>\n", "")
+    text = text.replace("#include <boost/process/v1.hpp>\r\n", "")
+    text = text.replace("#include <boost/process/v1.hpp>\n", "")
+
+    text = text.replace('#include "display.h"\r\n', "")
+    text = text.replace('#include "display.h"\n', "")
+
+    text = text.replace('#include "utf_utils.h"\r\n', "")
+    text = text.replace('#include "utf_utils.h"\n', "")
+
+    # Remove direct Windows includes if the replacement brought them in.
+    text = text.replace("#include <Windows.h>\r\n", "")
+    text = text.replace("#include <Windows.h>\n", "")
+    text = text.replace("#include <windows.h>\r\n", "")
+    text = text.replace("#include <windows.h>\n", "")
+    text = text.replace("#include <shellscalingapi.h>\r\n", "")
+    text = text.replace("#include <shellscalingapi.h>\n", "")
+    text = text.replace("#include <shtypes.h>\r\n", "")
+    text = text.replace("#include <shtypes.h>\n", "")
+
+    text = insert_after_any(
+        text,
+        [
+            "#include <boost/algorithm/string/join.hpp>\n",
+            "#include <boost/algorithm/string/join.hpp>\r\n",
+        ],
+        '#include <boost/process/v1.hpp>\n#include <MinHook.h>\n\n#include "utf_utils.h"\n',
+        "display_base.cpp include normalization",
+    )
+
+    # Remove duplicate MinHook include if it already existed elsewhere.
+    text = text.replace('#include <MinHook.h>\n#include <MinHook.h>\n', '#include <MinHook.h>\n')
+    text = text.replace('#include <MinHook.h>\r\n#include <MinHook.h>\r\n', '#include <MinHook.h>\r\n')
+
+    text = replace_once(
+        text,
+        'typedef long NTSTATUS;\n',
+        'typedef long NTSTATUS;\n\n#include "display.h"\n',
+        "display_base.cpp reinsert display.h after NTSTATUS",
+    )
+
+    text = text.replace("namespace bp = boost::process::v1;", "namespace bp = boost::process;")
+    text = text.replace("namespace bp = boost::process::v1", "namespace bp = boost::process")
+
+    text = text.replace("to_utf8(", "utf_utils::to_utf8(")
+    text = text.replace("from_utf8(", "utf_utils::from_utf8(")
+
+    # Avoid double-qualification if already fixed.
+    text = text.replace("utf_utils::utf_utils::to_utf8(", "utf_utils::to_utf8(")
+    text = text.replace("utf_utils::utf_utils::from_utf8(", "utf_utils::from_utf8(")
+
+    return text
+
+
+def normalize_display_vram_cpp(text: str) -> str:
+    if '#include "utf_utils.h"' not in text:
+        text = insert_after_any(
+            text,
+            [
+                '#include "src/video.h"\n',
+                '#include "src/video.h"\r\n',
+                '#include "src/nvenc/nvenc_utils.h"\n',
+                '#include "src/nvenc/nvenc_utils.h"\r\n',
+            ],
+            '#include "utf_utils.h"\n',
+            "display_vram.cpp add utf_utils include",
+        )
+
+    text = text.replace("auto wFile = from_utf8(file);", "auto wFile = utf_utils::from_utf8(file);")
+    text = text.replace("auto wFile = utf_utils::utf_utils::from_utf8(file);", "auto wFile = utf_utils::from_utf8(file);")
+
+    text = text.replace(
+        "auto color_vectors = ::video::color_vectors_from_colorspace(colorspace);",
+        "auto color_vectors = ::video::color_vectors_from_colorspace(colorspace, true);",
+    )
+    text = text.replace(
+        "color_vectors = ::video::new_color_vectors_from_colorspace(colorspace);",
+        "color_vectors = ::video::color_vectors_from_colorspace(colorspace, false);",
+    )
+    text = text.replace(
+        "auto default_color_vectors = ::video::color_vectors_from_colorspace(::video::colorspace_e::rec601, false);",
+        "auto default_color_vectors = ::video::color_vectors_from_colorspace({::video::colorspace_e::rec601, false, 8}, true);",
+    )
+
+    return text
+
+
+def transform_options(text: str) -> str:
+    text = replace_once(
+        text,
+        'set(SUNSHINE_PUBLISHER_NAME "Third Party Publisher"',
+        'set(SUNSHINE_PUBLISHER_NAME "Black-Seraph"',
+        "options.cmake publisher name",
+    )
+    text = replace_once(
+        text,
+        'set(SUNSHINE_PUBLISHER_WEBSITE ""',
+        'set(SUNSHINE_PUBLISHER_WEBSITE "https://www.black-seraph.com"',
+        "options.cmake publisher website",
+    )
+    text = replace_once(
+        text,
+        'set(SUNSHINE_PUBLISHER_ISSUE_URL "https://app.lizardbyte.dev/support"',
+        'set(SUNSHINE_PUBLISHER_ISSUE_URL "https://github.com/DuoStream/Duo/issues"',
+        "options.cmake issue url",
+    )
+    text = replace_once(
+        text,
+        'option(BUILD_DOCS "Build documentation" ON)',
+        'option(BUILD_DOCS "Build documentation" OFF)',
+        "options.cmake docs off",
+    )
+    text = replace_once(
+        text,
+        'option(BUILD_TESTS "Build tests" ON)',
+        'option(BUILD_TESTS "Build tests" OFF)',
+        "options.cmake tests off",
+    )
+    return text
+
+
+def transform_main(text: str) -> str:
+    text = replace_once(
+        text,
+        """#ifdef _WIN32
+  // Modify relevant NVIDIA control panel settings if the system has corresponding gpu
+  if (nvprefs_instance.load()) {
+    // Restore global settings to the undo file left by improper termination of sunshine.exe
+    nvprefs_instance.restore_from_and_delete_undo_file_if_exists();
+    // Modify application settings for sunshine.exe
+    nvprefs_instance.modify_application_profile();
+    // Modify global settings, undo file is produced in the process to restore after improper termination
+    nvprefs_instance.modify_global_profile();
+    // Unload dynamic library to survive driver re-installation
+    nvprefs_instance.unload();
+  }
+""",
+        """#ifdef _WIN32
+  /*
+  // Modify relevant NVIDIA control panel settings if the system has corresponding gpu
+  if (nvprefs_instance.load()) {
+    // Restore global settings to the undo file left by improper termination of sunshine.exe
+    nvprefs_instance.restore_from_and_delete_undo_file_if_exists();
+    // Modify application settings for sunshine.exe
+    nvprefs_instance.modify_application_profile();
+    // Modify global settings, undo file is produced in the process to restore after improper termination
+    nvprefs_instance.modify_global_profile();
+    // Unload dynamic library to survive driver re-installation
+    nvprefs_instance.unload();
+  }
+  */
+""",
+        "main.cpp disable nvprefs block",
+    )
+    text = replace_once(
+        text,
+        """  if (video::probe_encoders()) {
+    BOOST_LOG(error) << "Video failed to find working encoder"sv;
+  }
+""",
+        """  if (video::probe_encoders()) {
+    BOOST_LOG(error) << "Video failed to find working encoder"sv;
+    return -1;
+  }
+""",
+        "main.cpp fail when no encoder",
+    )
+    return text
+
+
+def transform_process(text: str) -> str:
+    include_addition = (
+        '\n'
+        '  // We have to include boost/process.hpp before display.h due to WinSock.h,\n'
+        '  // but that prevents the definition of NTSTATUS so we must define it ourself.\n'
+        '  typedef long NTSTATUS;\n\n'
+        '  // RdpIddCaptureBuffer & RdpIddCaptureMode structures\n'
+        '  #include "platform/windows/display.h"\n'
+    )
+
+    text = insert_after_any(
+        text,
+        [
+            '  #include "platform/windows/misc.h"\n',
+            '  #include "platform/windows/misc.h"\r\n',
+            '#include "platform/windows/misc.h"\n',
+            '#include "platform/windows/misc.h"\r\n',
+            '  #include "platform/windows/misc.h"\n\n',
+            '  #include "platform/windows/misc.h"\r\n\r\n',
+        ],
+        include_addition,
+        "process.cpp include display.h",
+    )
+
+    execute_addition = """    // Puzzle together the current session's shared buffer name
+    DWORD sessionId = 0;
+    ProcessIdToSessionId(GetCurrentProcessId(), &sessionId);
+    std::string sharedBufferName = "Global\\\\RdpIddCaptureBuffer" + std::to_string(sessionId);
+
+    // Open the shared buffer
+    HANDLE sharedBufferHandle = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, sharedBufferName.c_str());
+
+    // We managed to open the shared buffer handle
+    if (sharedBufferHandle != NULL)
+    {
+      // Map the shared buffer
+      platf::dxgi::PRdpIddCaptureBuffer sharedBuffer = (platf::dxgi::PRdpIddCaptureBuffer)MapViewOfFile(sharedBufferHandle, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(platf::dxgi::RdpIddCaptureBuffer));
+
+      // We managed to map the shared buffer
+      if (sharedBuffer != NULL)
+      {
+        // We need to adjust the mode
+        if (sharedBuffer->Mode.Width != launch_session->width || sharedBuffer->Mode.Height != launch_session->height || sharedBuffer->Mode.RefreshRate != launch_session->fps || (sharedBuffer->Mode.IsHDRSupported && sharedBuffer->Mode.HDR != launch_session->enable_hdr))
+        {
+          // Copy over the parameters
+          sharedBuffer->Mode.Width = launch_session->width;
+          sharedBuffer->Mode.Height = launch_session->height;
+          sharedBuffer->Mode.RefreshRate = launch_session->fps;
+          sharedBuffer->Mode.HDR = sharedBuffer->Mode.IsHDRSupported && launch_session->enable_hdr;
+
+          // Request a mode change
+          sharedBuffer->ModeChangePending = TRUE;
+        }
+
+        // Unmap the shared buffer
+        UnmapViewOfFile(sharedBuffer);
+      }
+
+      // Close the shared buffer handle
+      CloseHandle(sharedBufferHandle);
+    }
+
+"""
+
+    text = insert_after_any(
+        text,
+        [
+            "  int proc_t::execute(int app_id, std::shared_ptr<rtsp_stream::launch_session_t> launch_session) {\n",
+            "  int proc_t::execute(int app_id, std::shared_ptr<rtsp_stream::launch_session_t> launch_session) {\r\n",
+            "int proc_t::execute(int app_id, std::shared_ptr<rtsp_stream::launch_session_t> launch_session) {\n",
+            "int proc_t::execute(int app_id, std::shared_ptr<rtsp_stream::launch_session_t> launch_session) {\r\n",
+        ],
+        execute_addition,
+        "process.cpp shared buffer mode change",
+    )
+
+    return text
+
+
+def transform_video(text: str) -> str:
+    text = remove_once(
+        text,
+        "      bool artificial_reinit = false;\n\n",
+        "video.cpp remove artificial_reinit declaration",
+    )
+    text = replace_once(
+        text,
+        """        if (switch_display_event->peek()) {
+          artificial_reinit = true;
+          return false;
+        }
+""",
+        """        if (switch_display_event->peek()) {
+          return false;
+        }
+""",
+        "video.cpp remove artificial_reinit set",
+    )
+    text = remove_once(
+        text,
+        """      if (artificial_reinit && status != platf::capture_e::error) {
+        status = platf::capture_e::reinit;
+
+        artificial_reinit = false;
+      }
+
+""",
+        "video.cpp remove artificial_reinit block",
+    )
+    text = insert_before(
+        text,
+        "      session->request_normal_frame();\n",
+        """      // The frame encoded event handle
+      static HANDLE frameEncodedEventHandle;
+
+      // The frame encoded event hasn't been opened yet
+      if (frameEncodedEventHandle == NULL)
+      {
+        // Open the frame ready event
+        DWORD sessionId = 0;
+        ProcessIdToSessionId(GetCurrentProcessId(), &sessionId);
+        char frameEncodedEventName[32];
+        sprintf(frameEncodedEventName, "Global\\\\DuoIdd%uFrameEncoded", (unsigned int)sessionId);
+        frameEncodedEventHandle = OpenEventA(EVENT_ALL_ACCESS, FALSE, frameEncodedEventName);
+      }
+
+      // We've got an event we can signal
+      if (frameEncodedEventHandle != NULL)
+      {
+        // Signal the event
+        SetEvent(frameEncodedEventHandle);
+      }
+
+""",
+        "video.cpp signal frame encoded event",
+    )
+    return text
+
+
+def transform_audio_video_vue(text: str) -> str:
+    # Remove platform-specific imports not needed by Duo.
+    for line, label in [
+        ('import {$tp} from "../../platform-i18n"\n', "AudioVideo.vue remove platform i18n import"),
+        ('import PlatformLayout from "../../PlatformLayout.vue"\n', "AudioVideo.vue remove PlatformLayout import"),
+        ('import AdapterNameSelector from "./audiovideo/AdapterNameSelector.vue"\n', "AudioVideo.vue remove AdapterNameSelector import"),
+        ('import DisplayOutputSelector from "./audiovideo/DisplayOutputSelector.vue"\n', "AudioVideo.vue remove DisplayOutputSelector import"),
+        ('import DisplayDeviceOptions from "./audiovideo/DisplayDeviceOptions.vue";\n', "AudioVideo.vue remove DisplayDeviceOptions import"),
+    ]:
+        if line in text:
+            text = remove_once(text, line, label)
+
+    text = remove_between(
+        text,
+        "    <!-- Audio Sink -->\n",
+        "    <!-- Disable Audio -->\n",
+        "AudioVideo.vue remove audio sink/device sections",
+    )
+
+    if """
+    <AdapterNameSelector
+        :platform="platform"
+        :config="config"
+    />
+
+""" in text:
+        text = remove_once(
+            text,
+            """
+    <AdapterNameSelector
+        :platform="platform"
+        :config="config"
+    />
+
+""",
+            "AudioVideo.vue remove AdapterNameSelector block",
+        )
+
+    if """    <DisplayOutputSelector
+      :platform="platform"
+      :config="config"
+    />
+
+""" in text:
+        text = remove_once(
+            text,
+            """    <DisplayOutputSelector
+      :platform="platform"
+      :config="config"
+    />
+
+""",
+            "AudioVideo.vue remove DisplayOutputSelector block",
+        )
+
+    if """    <DisplayDeviceOptions
+      :platform="platform"
+      :config="config"
+    />
+
+""" in text:
+        text = remove_once(
+            text,
+            """    <DisplayDeviceOptions
+      :platform="platform"
+      :config="config"
+    />
+
+""",
+            "AudioVideo.vue remove DisplayDeviceOptions block",
+        )
+
+    return text
+
+
+def transform_index_html(text: str) -> str:
+    text = replace_once(
+        text,
+        """      installedVersionNotStable() {
+        if (!this.githubVersion || !this.version) {
+          return false;
+        }
+        return this.version.isGreater(this.githubVersion);
+      },
+""",
+        """      installedVersionNotStable() {
+        return false;
+      },
+""",
+        "index.html installedVersionNotStable",
+    )
+    text = replace_once(
+        text,
+        """      stableBuildAvailable() {
+        if (!this.githubVersion || !this.version) {
+          return false;
+        }
+        return this.githubVersion.isGreater(this.version);
+      },
+""",
+        """      stableBuildAvailable() {
+        return false;
+      },
+""",
+        "index.html stableBuildAvailable",
+    )
+    text = replace_once(
+        text,
+        """      preReleaseBuildAvailable() {
+        if (!this.preReleaseVersion || !this.githubVersion || !this.version) {
+          return false;
+        }
+        return this.preReleaseVersion.isGreater(this.version) && this.preReleaseVersion.isGreater(this.githubVersion);
+      },
+""",
+        """      preReleaseBuildAvailable() {
+        return false;
+      },
+""",
+        "index.html preReleaseBuildAvailable",
+    )
+    text = replace_once(
+        text,
+        """      buildVersionIsDirty() {
+        return this.version.version?.split(".").length === 5 &&
+          this.version.version.indexOf("dirty") !== -1
+      },
+""",
+        """      buildVersionIsDirty() {
+        return false;
+      },
+""",
+        "index.html buildVersionIsDirty",
+    )
+    return text
 
 
 def main() -> None:
@@ -144,6 +610,10 @@ def main() -> None:
         ],
     )
 
+    # Post-fix replacement files for current upstream API/layout differences
+    edit_file("src/platform/windows/display_base.cpp", normalize_display_base_cpp)
+    edit_file("src/platform/windows/display_vram.cpp", normalize_display_vram_cpp)
+
     # Small / medium files: anchored inline edits
 
     edit_file(
@@ -171,39 +641,6 @@ def main() -> None:
             "constants.cmake disable tray",
         ),
     )
-
-    def transform_options(text: str) -> str:
-        text = replace_once(
-            text,
-            'set(SUNSHINE_PUBLISHER_NAME "Third Party Publisher"',
-            'set(SUNSHINE_PUBLISHER_NAME "Black-Seraph"',
-            "options.cmake publisher name",
-        )
-        text = replace_once(
-            text,
-            'set(SUNSHINE_PUBLISHER_WEBSITE ""',
-            'set(SUNSHINE_PUBLISHER_WEBSITE "https://www.black-seraph.com"',
-            "options.cmake publisher website",
-        )
-        text = replace_once(
-            text,
-            'set(SUNSHINE_PUBLISHER_ISSUE_URL "https://app.lizardbyte.dev/support"',
-            'set(SUNSHINE_PUBLISHER_ISSUE_URL "https://github.com/DuoStream/Duo/issues"',
-            "options.cmake issue url",
-        )
-        text = replace_once(
-            text,
-            'option(BUILD_DOCS "Build documentation" ON)',
-            'option(BUILD_DOCS "Build documentation" OFF)',
-            "options.cmake docs off",
-        )
-        text = replace_once(
-            text,
-            'option(BUILD_TESTS "Build tests" ON)',
-            'option(BUILD_TESTS "Build tests" OFF)',
-            "options.cmake tests off",
-        )
-        return text
 
     edit_file("cmake/prep/options.cmake", transform_options)
 
@@ -236,54 +673,6 @@ def main() -> None:
             "display_device.cpp configure_display",
         ),
     )
-
-    def transform_main(text: str) -> str:
-        text = replace_once(
-            text,
-            """#ifdef _WIN32
-  // Modify relevant NVIDIA control panel settings if the system has corresponding gpu
-  if (nvprefs_instance.load()) {
-    // Restore global settings to the undo file left by improper termination of sunshine.exe
-    nvprefs_instance.restore_from_and_delete_undo_file_if_exists();
-    // Modify application settings for sunshine.exe
-    nvprefs_instance.modify_application_profile();
-    // Modify global settings, undo file is produced in the process to restore after improper termination
-    nvprefs_instance.modify_global_profile();
-    // Unload dynamic library to survive driver re-installation
-    nvprefs_instance.unload();
-  }
-""",
-            """#ifdef _WIN32
-  /*
-  // Modify relevant NVIDIA control panel settings if the system has corresponding gpu
-  if (nvprefs_instance.load()) {
-    // Restore global settings to the undo file left by improper termination of sunshine.exe
-    nvprefs_instance.restore_from_and_delete_undo_file_if_exists();
-    // Modify application settings for sunshine.exe
-    nvprefs_instance.modify_application_profile();
-    // Modify global settings, undo file is produced in the process to restore after improper termination
-    nvprefs_instance.modify_global_profile();
-    // Unload dynamic library to survive driver re-installation
-    nvprefs_instance.unload();
-  }
-  */
-""",
-            "main.cpp disable nvprefs block",
-        )
-        text = replace_once(
-            text,
-            """  if (video::probe_encoders()) {
-    BOOST_LOG(error) << "Video failed to find working encoder"sv;
-  }
-""",
-            """  if (video::probe_encoders()) {
-    BOOST_LOG(error) << "Video failed to find working encoder"sv;
-    return -1;
-  }
-""",
-            "main.cpp fail when no encoder",
-        )
-        return text
 
     edit_file("src/main.cpp", transform_main)
 
@@ -345,147 +734,7 @@ def main() -> None:
         ),
     )
 
-def insert_after_any(text: str, anchors: list[str], addition: str, label: str) -> str:
-    if addition in text:
-        return text
-    for anchor in anchors:
-        if anchor in text:
-            return text.replace(anchor, anchor + addition, 1)
-    fail(f"Could not find anchor for: {label}")
-
-def transform_process(text: str) -> str:
-    include_addition = (
-        '\n'
-        '  // We have to include boost/process.hpp before display.h due to WinSock.h,\n'
-        '  // but that prevents the definition of NTSTATUS so we must define it ourself.\n'
-        '  typedef long NTSTATUS;\n\n'
-        '  // RdpIddCaptureBuffer & RdpIddCaptureMode structures\n'
-        '  #include "platform/windows/display.h"\n'
-    )
-
-    text = insert_after_any(
-        text,
-        [
-            '  #include "platform/windows/misc.h"\n',
-            '  #include "platform/windows/misc.h"\r\n',
-            '  #include "platform/windows/misc.h"\n\n',
-            '  #include "platform/windows/misc.h"\r\n\r\n',
-        ],
-        include_addition,
-        "process.cpp include display.h",
-    )
-
-    execute_addition = """    // Puzzle together the current session's shared buffer name
-    DWORD sessionId = 0;
-    ProcessIdToSessionId(GetCurrentProcessId(), &sessionId);
-    std::string sharedBufferName = "Global\\\\RdpIddCaptureBuffer" + std::to_string(sessionId);
-
-    // Open the shared buffer
-    HANDLE sharedBufferHandle = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, sharedBufferName.c_str());
-
-    // We managed to open the shared buffer handle
-    if (sharedBufferHandle != NULL)
-    {
-      // Map the shared buffer
-      platf::dxgi::PRdpIddCaptureBuffer sharedBuffer = (platf::dxgi::PRdpIddCaptureBuffer)MapViewOfFile(sharedBufferHandle, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(platf::dxgi::RdpIddCaptureBuffer));
-
-      // We managed to map the shared buffer
-      if (sharedBuffer != NULL)
-      {
-        // We need to adjust the mode
-        if (sharedBuffer->Mode.Width != launch_session->width || sharedBuffer->Mode.Height != launch_session->height || sharedBuffer->Mode.RefreshRate != launch_session->fps || (sharedBuffer->Mode.IsHDRSupported && sharedBuffer->Mode.HDR != launch_session->enable_hdr))
-        {
-          // Copy over the parameters
-          sharedBuffer->Mode.Width = launch_session->width;
-          sharedBuffer->Mode.Height = launch_session->height;
-          sharedBuffer->Mode.RefreshRate = launch_session->fps;
-          sharedBuffer->Mode.HDR = sharedBuffer->Mode.IsHDRSupported && launch_session->enable_hdr;
-
-          // Request a mode change
-          sharedBuffer->ModeChangePending = TRUE;
-        }
-
-        // Unmap the shared buffer
-        UnmapViewOfFile(sharedBuffer);
-      }
-
-      // Close the shared buffer handle
-      CloseHandle(sharedBufferHandle);
-    }
-
-"""
-
-    text = insert_after_any(
-        text,
-        [
-            "  int proc_t::execute(int app_id, std::shared_ptr<rtsp_stream::launch_session_t> launch_session) {\n",
-            "  int proc_t::execute(int app_id, std::shared_ptr<rtsp_stream::launch_session_t> launch_session) {\r\n",
-        ],
-        execute_addition,
-        "process.cpp shared buffer mode change",
-    )
-
-    return text
-
-    def transform_video(text: str) -> str:
-        text = remove_once(
-            text,
-            "      bool artificial_reinit = false;\n\n",
-            "video.cpp remove artificial_reinit declaration",
-        )
-        text = replace_once(
-            text,
-            """        if (switch_display_event->peek()) {
-          artificial_reinit = true;
-          return false;
-        }
-""",
-            """        if (switch_display_event->peek()) {
-          return false;
-        }
-""",
-            "video.cpp remove artificial_reinit set",
-        )
-        text = remove_once(
-            text,
-            """      if (artificial_reinit && status != platf::capture_e::error) {
-        status = platf::capture_e::reinit;
-
-        artificial_reinit = false;
-      }
-
-""",
-            "video.cpp remove artificial_reinit block",
-        )
-        text = insert_before(
-            text,
-            "      session->request_normal_frame();\n",
-            """      // The frame encoded event handle
-      static HANDLE frameEncodedEventHandle;
-
-      // The frame encoded event hasn't been opened yet
-      if (frameEncodedEventHandle == NULL)
-      {
-        // Open the frame ready event
-        DWORD sessionId = 0;
-        ProcessIdToSessionId(GetCurrentProcessId(), &sessionId);
-        char frameEncodedEventName[32];
-        sprintf(frameEncodedEventName, "Global\\\\DuoIdd%uFrameEncoded", (unsigned int)sessionId);
-        frameEncodedEventHandle = OpenEventA(EVENT_ALL_ACCESS, FALSE, frameEncodedEventName);
-      }
-
-      // We've got an event we can signal
-      if (frameEncodedEventHandle != NULL)
-      {
-        // Signal the event
-        SetEvent(frameEncodedEventHandle);
-      }
-
-""",
-            "video.cpp signal frame encoded event",
-        )
-        return text
-
+    edit_file("src/process.cpp", transform_process)
     edit_file("src/video.cpp", transform_video)
 
     edit_file(
@@ -511,65 +760,10 @@ def transform_process(text: str) -> str:
         ),
     )
 
-    def transform_audio_video_vue(text: str) -> str:
-        text = replace_once(
-            text,
-            """import {ref} from 'vue'
-import {$tp} from '../../platform-i18n'
-import PlatformLayout from '../../PlatformLayout.vue'
-import AdapterNameSelector from './audiovideo/AdapterNameSelector.vue'
-import DisplayOutputSelector from './audiovideo/DisplayOutputSelector.vue'
-import DisplayDeviceOptions from "./audiovideo/DisplayDeviceOptions.vue";
-import DisplayModesSettings from "./audiovideo/DisplayModesSettings.vue";
-import Checkbox from "../../Checkbox.vue";
-""",
-            """import {ref} from 'vue'
-import {$tp} from '../../platform-i18n'
-import DisplayModesSettings from "./audiovideo/DisplayModesSettings.vue";
-import Checkbox from "../../Checkbox.vue";
-""",
-            "AudioVideo.vue imports",
-        )
-        text = remove_between(
-            text,
-            "    <!-- Audio Sink -->\n",
-            "    <!-- Disable Audio -->\n",
-            "AudioVideo.vue remove audio sink/device sections",
-        )
-        text = remove_once(
-            text,
-            """
-    <AdapterNameSelector
-        :platform="platform"
-        :config="config"
-    />
-
-""",
-            "AudioVideo.vue remove AdapterNameSelector",
-        )
-        text = remove_once(
-            text,
-            """    <DisplayOutputSelector
-      :platform="platform"
-      :config="config"
-    />
-
-""",
-            "AudioVideo.vue remove DisplayOutputSelector",
-        )
-        text = remove_once(
-            text,
-            """    <DisplayDeviceOptions
-      :platform="platform"
-      :config="config"
-    />
-
-""",
-            "AudioVideo.vue remove DisplayDeviceOptions",
-        )
-        return text
-
-    edit_file("src_assets/common/assets/web/configs/tabs/AudioVideo.vue", transform_audio_video_vue)
+    edit_file(
+        "src_assets/common/assets/web/configs/tabs/AudioVideo.vue",
+        transform_audio_video_vue,
+    )
 
     edit_file(
         "src_assets/common/assets/web/configs/tabs/General.vue",
@@ -613,67 +807,6 @@ import Checkbox from "../../Checkbox.vue";
             "DisplayModesSettings.vue remove minimum_fps_target",
         ),
     )
-
-    def transform_index_html(text: str) -> str:
-        text = replace_once(
-            text,
-            """      installedVersionNotStable() {
-        if (!this.githubVersion || !this.version) {
-          return false;
-        }
-        return this.version.isGreater(this.githubVersion);
-      },
-""",
-            """      installedVersionNotStable() {
-        return false;
-      },
-""",
-            "index.html installedVersionNotStable",
-        )
-        text = replace_once(
-            text,
-            """      stableBuildAvailable() {
-        if (!this.githubVersion || !this.version) {
-          return false;
-        }
-        return this.githubVersion.isGreater(this.version);
-      },
-""",
-            """      stableBuildAvailable() {
-        return false;
-      },
-""",
-            "index.html stableBuildAvailable",
-        )
-        text = replace_once(
-            text,
-            """      preReleaseBuildAvailable() {
-        if (!this.preReleaseVersion || !this.githubVersion || !this.version) {
-          return false;
-        }
-        return this.preReleaseVersion.isGreater(this.version) && this.preReleaseVersion.isGreater(this.githubVersion);
-      },
-""",
-            """      preReleaseBuildAvailable() {
-        return false;
-      },
-""",
-            "index.html preReleaseBuildAvailable",
-        )
-        text = replace_once(
-            text,
-            """      buildVersionIsDirty() {
-        return this.version.version?.split(".").length === 5 &&
-          this.version.version.indexOf("dirty") !== -1
-      },
-""",
-            """      buildVersionIsDirty() {
-        return false;
-      },
-""",
-            "index.html buildVersionIsDirty",
-        )
-        return text
 
     edit_file("src_assets/common/assets/web/index.html", transform_index_html)
 
