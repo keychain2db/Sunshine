@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import sys
 
 
@@ -55,13 +56,26 @@ def insert_after_any(text: str, anchors: list[str], addition: str, label: str) -
     fail(f"Could not find anchor for: {label}")
 
 
-def insert_before_any(text: str, anchors: list[str], addition: str, label: str) -> str:
+def insert_after_regex(text: str, pattern: str, addition: str, label: str) -> str:
     if addition in text:
         return text
-    for anchor in anchors:
-        if anchor in text:
-            return text.replace(anchor, addition + anchor, 1)
-    fail(f"Could not find anchor for: {label}")
+    m = re.search(pattern, text, flags=re.MULTILINE)
+    if not m:
+        fail(f"Could not find regex anchor for: {label}")
+    return text[:m.end()] + addition + text[m.end():]
+
+
+def insert_after_last_include(text: str, addition: str, label: str) -> str:
+    if addition in text:
+        return text
+
+    matches = list(re.finditer(r'^[ \t]*#include\s+[<"].+[>"].*(?:\r?\n)?', text, flags=re.MULTILINE))
+    if not matches:
+        fail(f"Could not find include block for: {label}")
+
+    last = matches[-1]
+    insert_pos = last.end()
+    return text[:insert_pos] + addition + text[insert_pos:]
 
 
 def remove_between(text: str, start: str, end: str, label: str) -> str:
@@ -98,6 +112,84 @@ def edit_file(path: str, transform) -> None:
     updated = transform(original)
     write(path, updated)
     print(f"Applied Duo inline edits to {path}")
+
+def transform_process(text: str) -> str:
+    include_addition = (
+        '\n'
+        '// We have to include the Windows display header here for\n'
+        '// RdpIddCaptureBuffer / RdpIddCaptureMode definitions.\n'
+        '// boost/process must come before display.h on Windows due to WinSock.\n'
+        'typedef long NTSTATUS;\n'
+        '#include "platform/windows/display.h"\n'
+    )
+
+    # Insert after the last #include in the file, regardless of exact upstream include layout.
+    if '#include "platform/windows/display.h"' not in text:
+        text = insert_after_last_include(
+            text,
+            include_addition,
+            "process.cpp include display.h",
+        )
+
+    execute_addition = """    // Puzzle together the current session's shared buffer name
+    DWORD sessionId = 0;
+    ProcessIdToSessionId(GetCurrentProcessId(), &sessionId);
+    std::string sharedBufferName = "Global\\\\RdpIddCaptureBuffer" + std::to_string(sessionId);
+
+    // Open the shared buffer
+    HANDLE sharedBufferHandle = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, sharedBufferName.c_str());
+
+    // We managed to open the shared buffer handle
+    if (sharedBufferHandle != NULL)
+    {
+      // Map the shared buffer
+      platf::dxgi::PRdpIddCaptureBuffer sharedBuffer =
+        (platf::dxgi::PRdpIddCaptureBuffer) MapViewOfFile(
+          sharedBufferHandle,
+          FILE_MAP_ALL_ACCESS,
+          0,
+          0,
+          sizeof(platf::dxgi::RdpIddCaptureBuffer)
+        );
+
+      // We managed to map the shared buffer
+      if (sharedBuffer != NULL)
+      {
+        // We need to adjust the mode
+        if (sharedBuffer->Mode.Width != launch_session->width ||
+            sharedBuffer->Mode.Height != launch_session->height ||
+            sharedBuffer->Mode.RefreshRate != launch_session->fps ||
+            (sharedBuffer->Mode.IsHDRSupported && sharedBuffer->Mode.HDR != launch_session->enable_hdr))
+        {
+          // Copy over the parameters
+          sharedBuffer->Mode.Width = launch_session->width;
+          sharedBuffer->Mode.Height = launch_session->height;
+          sharedBuffer->Mode.RefreshRate = launch_session->fps;
+          sharedBuffer->Mode.HDR = sharedBuffer->Mode.IsHDRSupported && launch_session->enable_hdr;
+
+          // Request a mode change
+          sharedBuffer->ModeChangePending = TRUE;
+        }
+
+        // Unmap the shared buffer
+        UnmapViewOfFile(sharedBuffer);
+      }
+
+      // Close the shared buffer handle
+      CloseHandle(sharedBufferHandle);
+    }
+
+"""
+
+    if 'std::string sharedBufferName = "Global\\\\RdpIddCaptureBuffer"' not in text:
+        text = insert_after_regex(
+            text,
+            r'(^[ \t]*int[ \t]+proc_t::execute\s*\(\s*int\s+app_id\s*,\s*std::shared_ptr<rtsp_stream::launch_session_t>\s+launch_session\s*\)\s*\{\r?\n)',
+            execute_addition,
+            "process.cpp shared buffer mode change",
+        )
+
+    return text
 
 
 def normalize_display_base_cpp(text: str) -> str:
